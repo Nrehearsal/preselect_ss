@@ -1,0 +1,37 @@
+#ifndef _RESOLVE_H
+#define _RESOLVE_H
+
+#include <stdint.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <stdarg.h>
+#include <arpa/inet.h>
+
+typedef uint32_t ipv4_t;
+typedef uint16_t port_t;
+
+#define INET_ADDR(o1,o2,o3,o4) (htonl((o1 << 24) | (o2 << 16) | (o3 << 8) | (o4 << 0)))
+
+struct dns_header{
+	uint16_t id, flags, question_count, answer_count, auth_count, addit_count;
+};
+struct dns_question{
+	uint16_t query_type, query_class;
+};
+
+//GCC parameter--->not aligned
+struct dns_resource{
+	uint16_t qtype, qclass;
+	uint32_t ttl;
+	uint16_t data_len;
+}__attribute__((packed));
+
+
+#define DNS_QUERY_TYPE_A 1
+#define DNS_QUERY_CLASS_IP 1
+
+int dns_fill_request_packet(char* packet, char* domain);
+int dns_packet_is_valid(char* response, int response_packet_len, int request_packet_len);
+ipv4_t dns_unbox_packet(char* response);
+
+#endif

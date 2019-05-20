@@ -1,0 +1,198 @@
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <errno.h>
+#include <string.h>
+
+#include "resolve.h"
+#include "mt_random.h"
+
+//Refer to the DNS protocol manual for more details.
+//----------------DNS_PACKET--------------------/
+//----------------------------------------------/
+//----------------dns_header--------------------/
+//----------------query_domain_name-------------/
+//----------------dns_question------------------/
+//----------------dns_answer_name_pointer-------/
+//----------------dns_resource------------------/
+//----------------dns_answer_address/CNAME...---/
+
+static struct dns_header *dnsh = NULL; 
+static char *dns_query_name = NULL;
+static struct dns_question *dnsq = NULL; 
+static struct dns_resource *dnsr = NULL;
+static char *dns_answer_name = NULL;
+static uint8_t *dns_answer_address = NULL;
+
+static uint16_t dns_header_id = 0;
+
+
+/* 
+ * Example:
+ * dns_query_name: www.baidu.com
+ * After Fill: 3www5baidu4com0
+ */
+static void 
+dns_fill_query_name(char* dns_query_name_space, char* src_domain)
+{
+	int i = 0;
+	int current_len = 0;
+	int domain_len = strlen(src_domain) + 1;
+	//start with length of each period of domain string
+	char* start_number_packet = dns_query_name_space;
+	//start with character for domain string
+	char* start_char_packet = dns_query_name_space+1;
+
+	char nowchar = 0;
+
+	for(i = 0; i < domain_len; i++)
+	{
+		nowchar = *src_domain++;	
+		if (nowchar == '.' || nowchar == 0)
+		{
+			*start_number_packet = current_len;
+			start_number_packet = start_char_packet++;
+			current_len = 0;	
+		}
+		else
+		{
+			*start_char_packet++ = nowchar;	
+			current_len++;
+		}
+	}
+	*start_char_packet = 0;
+}
+
+int 
+dns_fill_request_packet(char* packet, char* domain)
+{
+	//file dns_header
+	dnsh = (struct dns_header*)packet;
+	//id
+	//dns_header_id = 0x142f;
+	dns_header_id = rand_genrand_int32() & 0xffff;
+	dnsh->id = dns_header_id;
+	//flags
+	//00000001 00000000
+	//Recursion desired
+	dnsh->flags = htons(1 << 8);
+	//Questions
+	dnsh->question_count = htons(1);
+	//Answer RRs
+	dnsh->answer_count= htons(0);
+	//Authority RRs
+	dnsh->auth_count = htons(0);
+	//Additional RRs
+	dnsh->addit_count = htons(0);
+
+	//dns_query_name = response + offset(sizeof(struct dns_header))
+	dns_query_name = (char*)(dnsh + 1);
+	dns_fill_query_name(dns_query_name, domain);
+
+	//fill dns_question dnsq = sizeof(dnst) + strlen(dns_query_name) + 1
+	dnsq = (struct dns_question*)(dns_query_name + strlen(dns_query_name) + 1);
+	dnsq->query_type = htons(DNS_QUERY_TYPE_A);
+	dnsq->query_class = htons(DNS_QUERY_CLASS_IP);
+
+	return sizeof(struct dns_header) + strlen(dns_query_name) + 1 + sizeof(struct dns_question);
+}
+
+int 
+dns_packet_is_valid(char* response, int response_packet_len, int request_packet_len)
+{
+	if (response_packet_len < request_packet_len)
+	{
+		return 0;	
+	}
+
+	dnsh = (struct dns_header*)response;
+	//See DNS protocol for more detial;	
+	if (dnsh->id != dns_header_id || dnsh->answer_count == 0)
+	{
+		return 0;	
+	}
+
+	return 1;
+}
+
+static void 
+resolv_skip_name(char *reader, char *buffer, int *count)
+{
+    unsigned int jumped = 0, offset;
+    *count = 1;
+    while(*reader != 0)
+    {
+        if(*reader >= 192)
+        {
+            offset = (*reader)*256 + *(reader+1) - 49152;
+            reader = buffer + offset - 1;
+            jumped = 1;
+        }
+        reader = reader+1;
+        if(jumped == 0)
+            *count = *count + 1;
+    }
+
+    if(jumped == 1)
+        *count = *count + 1;
+}
+
+ipv4_t 
+dns_unbox_packet(char* response)
+{
+	ipv4_t host = 0;
+	int stop = 0;
+	int dns_query_name_len = strlen(dns_query_name) + 1;
+
+	dnsh = (struct dns_header*)response;
+	dns_query_name = (char*)(dnsh+1);
+	dnsq = (struct dns_question*)(dns_query_name + dns_query_name_len + 1);
+	dns_answer_name = (char*)(dnsq+1);
+
+	uint16_t answer_count = ntohs(dnsh->answer_count);
+
+	//fetch answer
+	while(answer_count-- > 0) {
+		/*each name space occupated 2 bytes of a dns response packet
+		 *---------------------answer_ares-------------------------/
+		 *--------------------name_pointer------------------------/
+		 *--------------------dns_answer_resource------------------/
+		 *--------------------data/CNAME/...-----------------------/
+		 */
+		dnsr = NULL;
+
+		resolv_skip_name(dns_answer_name, response, &stop);
+		dns_answer_name = dns_answer_name + stop;
+
+		dnsr = (struct dns_resource*)(dns_answer_name);
+		dns_answer_name  = dns_answer_name + sizeof(struct dns_resource);
+
+		if (ntohs(dnsr->qtype) == DNS_QUERY_TYPE_A && ntohs(dnsr->qclass) == DNS_QUERY_CLASS_IP)
+		{
+			if (ntohs(dnsr->data_len) == 4) {
+				uint8_t tmpbuf[4];
+				for (int i =0; i < 4; i++)
+				{
+					tmpbuf[i] = dns_answer_name[i];	
+					//printf("%d\n", tmp_buf[i]);
+				}
+				memcpy(&host, tmpbuf, sizeof(tmpbuf));
+				break;
+			}
+			dns_answer_name = dns_answer_name + ntohs(dnsr->data_len);
+		} else {
+			//go to next answer snippet	
+			//*host = 0;
+			//printf("[Reslove]len--------------%d\n", ntohs(dnsr->data_len));
+			resolv_skip_name(dns_answer_name, response, &stop);
+			dns_answer_name = dns_answer_name + stop;
+		}
+	}
+
+	if (host) {
+		return host;
+	}
+	
+	return 0;
+}
