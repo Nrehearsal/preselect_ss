@@ -28,13 +28,13 @@
     $ ./preselect_ss -p 8081 -k mypassword -m aes-128-gcm -t 60 -u x.x.x.x -l 3389 -d ipipfree.ipdb -n 119.29.29.29
     ```
 - tips: 
-    -c <conf> configuration file for preselect_ss
-    -p <port> port for your ss server
-    -k <password> password for your ss server
-    -m <method> encrypt method for you ss server
-    -t <timeout> proxy timeout
-    -u <uhost> upstream host
-    -l <uport> upstream port
-    -d <ipdb> ipdb file
-    -n <nameserver> dns nameserver
+    - -c <conf> configuration file for preselect_ss
+    - -p <port> port for your ss server
+    - -k <password> password for your ss server
+    - -m <method> encrypt method for you ss server
+    - -t <timeout> proxy timeout
+    - -u <uhost> upstream host
+    - -l <uport> upstream port
+    - -d <ipdb> ipdb file
+    - -n <nameserver> dns nameserver
 
